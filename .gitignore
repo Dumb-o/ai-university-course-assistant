@@ -1,0 +1,20 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Playwright scraper runtime (contains authenticated session cookies!)
+mytimes_state/
+mytimes_links.json
+
+# Secrets / env
+.env
+*.env
+
+# Obsidian
+.obsidian/
+*.md
+
+# OS
+.DS_Store
+Thumbs.db
