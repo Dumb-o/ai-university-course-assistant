@@ -14,6 +14,7 @@ mytimes_links.json
 # Obsidian
 .obsidian/
 *.md
+!README.md
 
 # OS
 .DS_Store
