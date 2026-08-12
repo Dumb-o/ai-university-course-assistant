@@ -23,5 +23,5 @@ Thumbs.db
 # Source Code 
 
 *.html 
-
+downloads/*
 scrape_script/downloads/*
