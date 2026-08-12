@@ -19,3 +19,7 @@ mytimes_links.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Source Code 
+
+*.html 

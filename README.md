@@ -62,17 +62,23 @@ playwright install chromium
 python3 scrape_script/mytimes_scraper.py "https://mytimes.taylors.edu.my/course/view.php?id=47163"
 ```
 
-MyTIMES authenticates via a **Taylor's Microsoft account** (MFA required). The script defaults to **manual login**: complete email + password + MFA in the browser window once — the authenticated session is saved to `mytimes_state/` and reused on later runs.
+MyTIMES authenticates via a **Taylor's Microsoft account** (MFA required). The script opens a visible Chromium window; complete email + password + MFA in the browser. **No Enter press is needed** — once you finish login and the URL leaves the Microsoft login page, the scraper automatically collects every link on the course page and writes `mytimes_links.json`.
 
-Optional auto-fill:
-
+Optional output / download flags:
 ```bash
-export TAYLORS_EMAIL="name@taylors.edu.my"
-export TAYLORS_PASSWORD="your_password"
-python3 scrape_script/mytimes_scraper.py --auto-fill "https://mytimes.taylors.edu.my/course/view.php?id=47163"
+python3 scrape_script/mytimes_scraper.py "URL" -o custom_links.json
+python3 scrape_script/mytimes_scraper.py "URL" -d ./my_downloads   # set download folder
+python3 scrape_script/mytimes_scraper.py "URL" --no-download       # collect links only, skip downloads
 ```
 
-The scraper writes `mytimes_links.json` containing every discovered link, classified by type (`mod:resource`, `mod:assign`, `file`, `course`, `other`).
+The scraper writes `mytimes_links.json` containing every discovered link, classified by type (`mod:resource`, `mod:assign`, `mod:quiz`, `file`, `course`, `other`), with each link's visible text, title, and full URL. It then **automatically downloads the essential documents** (`mod:resource` + `file` kinds) into a `downloads/` folder next to the JSON, reusing your authenticated session — no re-login. Use the `kind` field to understand what was fetched; `--no-download` disables the download step if you only want the link map.
+
+### Script structure (`scrape_script/mytimes_scraper.py`)
+- `open_browser_at(url, output, downloads_dir, do_download)` — Function 1 + 2: launch Chromium, navigate, wait for manual auth to finish automatically, then run 3 + 4.
+- `scrape_links(page, base_url)` — Function 3: collect + classify all `<a href>` into JSON.
+- `download_documents(page, links, downloads_dir)` / `download_link(...)` — Function 4: download `mod:resource` + `file` links into the temp folder.
+- `classify(href)` — label a URL as `mod:*`, `file`, `course`, or `other`.
+- `looks_like_login(url)` / `wait_for_authenticated(page)` — detect when login is done (no Enter needed).
 
 ## Known facts & unknowns
 
@@ -81,10 +87,10 @@ The scraper writes `mytimes_links.json` containing every discovered link, classi
 | MyTIMES is Moodle-based | Confirmed |
 | Authentication is required (OIDC / Microsoft account) | Confirmed |
 | Basic `requests` scraping cannot access course content | Confirmed |
-| Playwright is the chosen browser automation approach | Planned |
-| Playwright authentication works | Not yet tested |
-| Resource resolution mechanism is fully understood | Not yet tested |
-| Complete course ingestion works end-to-end | Not yet implemented |
+| Playwright is the chosen browser automation approach | Implemented (Functions 1-4) |
+| Playwright authentication works | Verified (manual login + auto-detect, headless logic tested) |
+| Resource resolution mechanism is fully understood | Mostly (mod:resource → pluginfile.php anchor followed; may need tweaks on live site) |
+| Complete course ingestion works end-to-end | Download mechanism verified headlessly; live MyTIMES run pending display + credentials |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
