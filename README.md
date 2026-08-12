@@ -44,8 +44,12 @@ Embeddings / vector search are a **future phase** (Phase 2), not part of the MVP
 
 ```text
 scrape_script/
-├── mytimes_scraper.py   # Playwright login + course link scraper
-└── scrape_links.py      # prototype: unauthenticated requests scraper (does NOT work on Moodle)
+├── mytimes_scraper_v1.py   # CURRENT: Playwright login + card-scoped enriched link scraper (Functions 1-3)
+├── mytimes_scraper_v0.py   # earlier baseline: flat "every <a href>" scraper
+├── mytimes_scraper.py      # RETIRED 4-function build (auto-download) — slated for deletion, do not use
+└── scrape_links_base.py     # prototype: unauthenticated requests scraper (does NOT work on Moodle)
+Block_example.html           # saved course-content HTML block used to validate the extractor
+Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1)
 ```
 
 ## Prerequisites
@@ -53,32 +57,31 @@ scrape_script/
 - Python 3.14+ and a virtual environment
 - Playwright + Chromium
 
-## Running the scraper
+## Running the scraper (v1)
 
 ```bash
 source .venv/bin/activate
 pip install playwright beautifulsoup4 requests fastapi uvicorn
 playwright install chromium
-python3 scrape_script/mytimes_scraper.py "https://mytimes.taylors.edu.my/course/view.php?id=47163"
+python3 scrape_script/mytimes_scraper_v1.py "https://mytimes.taylors.edu.my/course/view.php?id=47163"
 ```
 
-MyTIMES authenticates via a **Taylor's Microsoft account** (MFA required). The script opens a visible Chromium window; complete email + password + MFA in the browser. **No Enter press is needed** — once you finish login and the URL leaves the Microsoft login page, the scraper automatically collects every link on the course page and writes `mytimes_links.json`.
+MyTIMES authenticates via a **Taylor's Microsoft account** (MFA required). The script opens a visible Chromium window; complete email + password + MFA in the browser. **No Enter press is needed** — once you finish login and the URL leaves the Microsoft login page, the scraper automatically collects the course's activity links (scoped to the Moodle activity cards, NOT every `<a href>`) and writes `mytimes_links.json`.
 
-Optional output / download flags:
+Output flag:
 ```bash
-python3 scrape_script/mytimes_scraper.py "URL" -o custom_links.json
-python3 scrape_script/mytimes_scraper.py "URL" -d ./my_downloads   # set download folder
-python3 scrape_script/mytimes_scraper.py "URL" --no-download       # collect links only, skip downloads
+python3 scrape_script/mytimes_scraper_v1.py "URL" -o custom_links.json
 ```
 
-The scraper writes `mytimes_links.json` containing every discovered link, classified by type (`mod:resource`, `mod:assign`, `mod:quiz`, `file`, `course`, `other`), with each link's visible text, title, and full URL. It then **automatically downloads the essential documents** (`mod:resource` + `file` kinds) into a `downloads/` folder next to the JSON, reusing your authenticated session — no re-login. Use the `kind` field to understand what was fetched; `--no-download` disables the download step if you only want the link map.
+> **Scope of v1:** Functions 1-3 only — open Chromium, manual login, enriched link collection. There is **no download step** in v1 (the earlier auto-download build in `mytimes_scraper.py` was retired). The JSON carries a `download` boolean (true only for `resource` links whose hidden suffix says "File") so you can decide what to fetch next. Downloading is a planned Function 4, not yet built into v1.
 
-### Script structure (`scrape_script/mytimes_scraper.py`)
-- `open_browser_at(url, output, downloads_dir, do_download)` — Function 1 + 2: launch Chromium, navigate, wait for manual auth to finish automatically, then run 3 + 4.
-- `scrape_links(page, base_url)` — Function 3: collect + classify all `<a href>` into JSON.
-- `download_documents(page, links, downloads_dir)` / `download_link(...)` — Function 4: download `mod:resource` + `file` links into the temp folder.
-- `classify(href)` — label a URL as `mod:*`, `file`, `course`, or `other`.
+### Script structure (`scrape_script/mytimes_scraper_v1.py`)
+- `open_browser_at(url, output)` — Function 1 + 2: launch Chromium (visible), navigate, wait for manual auth to finish automatically, then run Function 3.
+- `scrape_links(page, base_url)` — Function 3: walk the Moodle activity cards (`.course-content` → `a.aalink` → owning `li.activity`, nearest `li.section`) and read each card's `modtype_*` class (kind), `data-activityname` (name), `a.aalink` href (url), and section. Writes enriched JSON.
 - `looks_like_login(url)` / `wait_for_authenticated(page)` — detect when login is done (no Enter needed).
+- `SKIP_KINDS` — module types that are NOT downloads (forum, assign, turnitintooltwo, subsection, quiz, ...); used to set the `download` flag.
+
+The old `classify()` (URL-pattern labeling) is no longer the primary classifier in v1; `kind` now comes from the authoritative `modtype_*` CSS class on each card.
 
 ## Known facts & unknowns
 
@@ -87,10 +90,12 @@ The scraper writes `mytimes_links.json` containing every discovered link, classi
 | MyTIMES is Moodle-based | Confirmed |
 | Authentication is required (OIDC / Microsoft account) | Confirmed |
 | Basic `requests` scraping cannot access course content | Confirmed |
-| Playwright is the chosen browser automation approach | Implemented (Functions 1-4) |
+| Playwright is the chosen browser automation approach | Implemented (Functions 1-3 in v1) |
 | Playwright authentication works | Verified (manual login + auto-detect, headless logic tested) |
-| Resource resolution mechanism is fully understood | Mostly (mod:resource → pluginfile.php anchor followed; may need tweaks on live site) |
-| Complete course ingestion works end-to-end | Download mechanism verified headlessly; live MyTIMES run pending display + credentials |
+| Card-scoped extractor reads real names + sections (Option A) | Implemented + verified against `Block_example.html` |
+| `kind` from `modtype_*` class; `download` flag set from "File" suffix | Implemented + verified |
+| Resource resolution mechanism is fully understood | Mostly (mod:resource → file served via pluginfile.php; download step not yet built) |
+| Complete course ingestion works end-to-end (incl. download) | NOT yet — v1 stops at enriched link JSON; live MyTIMES run pending display + credentials |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
