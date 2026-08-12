@@ -13,8 +13,11 @@ Usage:
 
 Functions 1-3 identical to v1/v2 (card-scoped enriched link collection with a
 `download` flag). Function 4 (download_documents) saves each `download: true`
-link to downloads/<Section>/<name>.<ext> — folder tree mirrors the site's
-sections, filename is the scraped name, and re-runs are deduplicated.
+link to downloads/<Course Name>/<Section>/<name>.<ext> — the `<Course Name>`
+folder is derived from the page title (e.g. 'Course: Software Testing
+(202605-Lecture) | myTimes' -> 'Software Testing (202605-Lecture)'), the
+`<Section>` tree mirrors the site's sections, filename is the scraped name,
+and re-runs are deduplicated.
 """
 
 import argparse  # Reading command line arguments
@@ -72,6 +75,24 @@ UNSAFE = re.compile(r'[\\/:*?"<>|]')
 def safe_name(value):
     """Make a string safe to use as a file or directory name."""
     return UNSAFE.sub("-", (value or "").strip()).strip(".")
+
+
+def course_name_from_title(page_title):
+    """Extract a filesystem-safe course name from a page title.
+
+    Input looks like:  'Course: Software Testing (202605-Lecture) | myTimes'
+    Returns:            'Software Testing (202605-Lecture)'
+
+    The leading 'Course:' label and the trailing '| myTimes' suffix are
+    stripped, then the remainder is made filesystem-safe. If the title does
+    not match the expected shape we still get a usable (if generic) folder.
+    """
+    title = (page_title or "").strip()
+    head = title.split("|", 1)[0].strip()          # drop ' | myTimes' suffix
+    m = re.match(r"^course:\s*(.+)$", head, re.I)   # drop 'Course:' label
+    if m:
+        head = m.group(1).strip()
+    return safe_name(head) or "Unknown Course"
 
 
 def extension_from_filename(filename):
@@ -443,7 +464,12 @@ async def open_browser_at(url, output="mytimes_links.json", downloads_dir="downl
             # Function 4: download the marked files.
             download_results = []
             if do_download and output_data["downloadable"] > 0:
-                download_results = await download_documents(page, links, downloads_dir)
+                # Nest everything under downloads/<Course Name>/ so each run
+                # lands in its own folder (extracted from the page title).
+                course_dir = Path(downloads_dir) / course_name_from_title(output_data["page_title"])
+                course_dir.mkdir(parents=True, exist_ok=True)
+                print(f"[download] course folder: {course_dir}")
+                download_results = await download_documents(page, links, course_dir)
                 downloaded = sum(1 for r in download_results if r["status"] == "downloaded")
                 skipped = sum(1 for r in download_results if r["status"] == "skipped")
                 errored = sum(1 for r in download_results if r["status"] == "error")
