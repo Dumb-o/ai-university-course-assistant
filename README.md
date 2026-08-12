@@ -83,7 +83,7 @@ python3 scrape_script/mytimes_scraper_v3.py "URL" -d ./my_downloads        # dow
 python3 scrape_script/mytimes_scraper_v3.py "URL" --no-download            # collect links only, skip downloading
 ```
 
-> **What gets downloaded:** only links where `download` is `true` (kind `resource` whose hidden suffix is "File"). Each file is saved to `downloads/<Section>/<name>.<ext>` — the `<Section>` folder mirrors the site's week/subsection organization (e.g. `General/`, `Week 2/`, `Software Sustainment MLO2/`, `MLO3 - Group Project 40%/`), and the filename is the scraped `name`. **Deduplication:** if the target file already exists it is skipped, so re-runs are safe and never create duplicates.
+- Each file is saved to `downloads/<Course Name>/<Section>/<name>.<ext>` — the `<Course Name>` folder is taken from the page title (e.g. `Course: Software Testing (202605-Lecture) | myTimes` → `Software Testing (202605-Lecture)`), the `<Section>` folder mirrors the site's week/subsection organization (e.g. `General/`, `Week 2/`, `Software Sustainment MLO2/`, `MLO3 - Group Project 40%/`), and the filename is the scraped `name`. **Deduplication:** if the target file already exists it is skipped, so re-runs are safe and never create duplicates.
 >
 > **v3 download fix (open-in-browser + `.php`):**
 > - Open-in-browser resources (file renders instead of downloading) are captured via request routing (`page.route` + `route.fetch()`), so both force-download and open modes save correctly.
