@@ -33,6 +33,13 @@ from playwright.async_api import async_playwright
 # Direct file-download links (fallback signal when file_type suffix is missing).
 FILE_EXT = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|csv|png|jpe?g|gif|zip|txt|html?)$", re.I)
 
+# Moodle serves real activity content from a module component area, e.g.
+# /pluginfile.php/<ctx>/mod_resource/content/1/Lecture.pptx
+# Theme chrome (icons, logos) uses theme components instead — theme/image.php or
+# /pluginfile.php/1/theme_boost/logo/... — so matching `mod_*` is what separates
+# "the file the user wants" from "a picture the page happens to load".
+MODULE_CONTENT_PATH = re.compile(r"/mod_[a-z0-9]+/", re.I)
+
 # Module types that are NOT downloadable content (navigation / portals / pages).
 SKIP_KINDS = {"forum", "assign", "turnitintooltwo", "subsection", "quiz", "choice",
               "url", "label", "feedback", "survey", "lesson", "workshop", "chat",
@@ -159,17 +166,6 @@ def looks_like_login(url):
     )
 
 
-def _should_capture(response):
-    """Router predicate: capture any response that is NOT an HTML webpage.
-
-    A real file (pdf/zip/image/octet-stream) is captured; an HTML link/Page
-    wrapper is NOT — so it is never saved. The final keep/skip + extension
-    decision happens at save time (magic-bytes sniff), not here.
-    """
-    ct = (response.headers.get("content-type") or "").lower()
-    return not ct.startswith("text/html")
-
-
 def looks_like_document(body):
     """True if the bytes begin with a known document/office/image signature."""
     return bool(magic_ext(body))
@@ -183,11 +179,31 @@ def is_file_response(response):
     script endpoints, so that would save a `.php`. A response counts as a file
     only if: (a) it has a known document Content-Type, OR (b) it carries a
     Content-Disposition with a filename having a real document extension.
+
+    IMAGES are a special case: a resource page embeds theme icons and logos
+    (32x32 file-type icons, site banners) that are real `image/*` responses but
+    are NOT the resource. Note a theme LOGO is also served from
+    `pluginfile.php` (e.g. `/pluginfile.php/1/theme_boost/logo/...`), so the
+    path alone is not enough: an image only counts when it comes from a module
+    CONTENT area (`/mod_<something>/`, as in `/mod_resource/content/`) or
+    carries an attachment Content-Disposition. Anything from a `theme*`
+    component is UI chrome and must be ignored.
     """
     ct = (response.headers.get("content-type") or "").lower()
     cd = (response.headers.get("content-disposition") or "").lower()
     cd_name = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', cd, re.I)
     cd_ext = extension_from_filename(cd_name.group(1)) if cd_name else ""
+
+    path = urlparse(response.url).path.lower()
+    is_image = ct.startswith("image/")
+    is_module_content = bool(MODULE_CONTENT_PATH.search(path))
+    is_attachment = "attachment" in cd
+
+    # An image is only the resource body when it is genuine module content or an
+    # explicit attachment; theme icons/logos (incl. theme_* pluginfile paths)
+    # are chrome and are never the file we came for.
+    if is_image and not (is_module_content or is_attachment):
+        return False
 
     if any(ct.startswith(t) for t in DOC_CONTENT_TYPES):
         return True
@@ -195,7 +211,7 @@ def is_file_response(response):
     if cd_ext and sanitize_doc_ext(cd_ext):
         return True
     # Fallback: a direct file URL (image/doc/zip) ending in a real extension.
-    if FILE_EXT.search(urlparse(response.url).path):
+    if FILE_EXT.search(path):
         return True
     return False
 
@@ -299,7 +315,7 @@ async def download_link(page, link, downloads_dir):
         except Exception:
             await route.continue_()
             return
-        if not captured and _should_capture(fetched):
+        if not captured and is_file_response(fetched):
             captured["resp"] = fetched
             captured["headers"] = dict(fetched.headers)
             captured["url"] = fetched.url
@@ -315,8 +331,12 @@ async def download_link(page, link, downloads_dir):
             await page.goto(link["url"], wait_until="domcontentloaded", timeout=60000)
         except Exception:
             pass
-        # Wait for the file response to be captured.
-        for _ in range(100):
+        # Wait for the file response to be captured. On an embedded/"open in
+        # browser" resource the wrapper HTML loads CSS/JS/fonts FIRST and the
+        # real file request comes later, so we must keep waiting rather than
+        # latch onto the first non-HTML response. is_file_response() above is
+        # what makes that safe: assets never satisfy it.
+        for _ in range(200):
             if "resp" in captured:
                 break
             await asyncio.sleep(0.1)
@@ -382,8 +402,6 @@ async def download_link(page, link, downloads_dir):
         return {"url": link["url"], "name": link["name"], "section": link.get("section"),
                 "status": "error", "reason": "response is not a document (webpage/link wrapper) — skipped",
                 "path": None}
-    if not ext:
-        ext = ".pdf"  # safe default for Moodle resources
     save_path = dest_dir / f"{base}{ext}"
     if save_path.exists():
         return {"url": link["url"], "name": link["name"], "section": link.get("section"),
