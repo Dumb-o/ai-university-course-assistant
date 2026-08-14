@@ -28,3 +28,4 @@ scrape_script/downloads/*
 
 # Raw course data (downloaded Moodle files — the authoritative source corpus)
 course-data/raw/*
+course-data/* 
