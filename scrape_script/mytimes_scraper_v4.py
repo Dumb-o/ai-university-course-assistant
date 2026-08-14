@@ -12,8 +12,15 @@ _dedup_existing(), save_captured_file(). Every observable action of v3 is preser
 Usage:
     python3 mytimes_scraper_v4.py <URL> [-o mytimes_links.json] [-d <custom root>]
 
-Downloads land in `DEFAULT_DOWNLOADS_ROOT/<Course Name>/<Section>/<name>.<ext>`
-(`<repo>/course-data/raw/...`) unless `-d` points elsewhere.
+The Moodle course id is read from the URL (``?id=NNNN``) and forms the stable
+course id ``mytimes-NNNN``, which is used as the download directory name:
+
+    <downloads_root>/<course_id>/<Section>/<name>.<ext>
+
+with the default ``downloads_root`` being ``<repo>/course-data/raw/`` (the
+canonical raw corpus the ingestion inventory scans). The human-readable course
+name is preserved as metadata in ``course_metadata.json`` inside the course
+directory. Repeated runs always target the same ``<course_id>/`` folder.
 """
 
 import argparse  # Reading command line arguments
@@ -27,12 +34,35 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 
 # Default download root, anchored to the project (not the working directory):
-# downloads land in course-data/raw/<Course Name>/<Section>/<name>.<ext>, which
-# is exactly the corpus the ingestion inventory scans. `-d` still overrides this.
+# downloads land in course-data/raw/<course_id>/<Section>/<name>.<ext>, which is
+# exactly the corpus the ingestion inventory scans. `-d` still overrides this.
 DEFAULT_DOWNLOADS_ROOT = Path(__file__).resolve().parents[1] / "course-data" / "raw"
+
+# Stable, course-scoped download folder name, e.g. mytimes-47164.
+COURSE_ID_PREFIX = "mytimes"
+COURSE_URL_ID_RE = re.compile(r"[?&]id=(\d+)")
+
+# Metadata handoff file the scraper writes inside each course directory, so the
+# inventory generator can obtain course_id / course_name / course_url without the
+# user repeating them.
+COURSE_METADATA_FILENAME = "course_metadata.json"
+COURSE_METADATA_SCHEMA_VERSION = "1.0"
 
 # Direct file-download links (fallback signal when file_type suffix is missing).
 FILE_EXT = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|csv|png|jpe?g|gif|zip|txt|html?)$", re.I)
+
+
+def course_id_from_url(url):
+    """Extract the stable Moodle course id from a course URL, e.g.:
+
+    'https://mytimes.taylors.edu.my/course/view.php?id=47164' -> 'mytimes-47164'
+
+    Returns None when the URL carries no numeric ``id`` parameter.
+    """
+    m = COURSE_URL_ID_RE.search(url or "")
+    if m:
+        return f"{COURSE_ID_PREFIX}-{m.group(1)}"
+    return None
 
 # Moodle serves real activity content from a module component area, e.g.
 # /pluginfile.php/<ctx>/mod_resource/content/1/Lecture.pptx
@@ -454,7 +484,18 @@ async def wait_for_authenticated(page, timeout=300):
 
 async def open_browser_at(url, output="mytimes_links.json",
                           downloads_dir=DEFAULT_DOWNLOADS_ROOT, do_download=True):
-    """FUNCTION 1 (+ Function 2 manual login) then Function 3, then Function 4."""
+    """FUNCTION 1 (+ Function 2 manual login) then Function 3, then Function 4.
+
+    The stable course id is derived from the Moodle URL (``?id=NNNN`` -> 
+    ``mytimes-NNNN``) and becomes the course folder name under ``downloads_dir``.
+    """
+    course_id = course_id_from_url(url)
+    if not course_id:
+        print(f"[error] cannot determine a Moodle course id from URL: {url}")
+        print("[error] expected a course URL like "
+              "https://mytimes.taylors.edu.my/course/view.php?id=47164")
+        return
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=False)
         page = await browser.new_page()
@@ -493,11 +534,28 @@ async def open_browser_at(url, output="mytimes_links.json",
             if len(links) > 20:
                 print(f"  ... and {len(links) - 20} more")
 
+            # Metadata handoff for the inventory generator: the human-readable
+            # course name is preserved here; the course id remains the stable
+            # machine identity (the directory name).
+            course_name = course_name_from_title(output_data["page_title"])
+            course_dir = Path(downloads_dir) / course_id
+            course_dir.mkdir(parents=True, exist_ok=True)
+            course_metadata = {
+                "schema_version": COURSE_METADATA_SCHEMA_VERSION,
+                "course_id": course_id,
+                "course_url": url,
+                "course_name": course_name,
+                "scraped_at": output_data["scraped_at"],
+            }
+            (course_dir / COURSE_METADATA_FILENAME).write_text(
+                json.dumps(course_metadata, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            print(f"[metadata] wrote {course_dir / COURSE_METADATA_FILENAME}")
+
             # Function 4: download the marked files.
             download_results = []
             if do_download and output_data["downloadable"] > 0:
-                course_dir = Path(downloads_dir) / course_name_from_title(output_data["page_title"])
-                course_dir.mkdir(parents=True, exist_ok=True)
                 print(f"[download] course folder: {course_dir}")
                 download_results = await download_documents(page, links, course_dir)
                 downloaded = sum(1 for r in download_results if r["status"] == "downloaded")

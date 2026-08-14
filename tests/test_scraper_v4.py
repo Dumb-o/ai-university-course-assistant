@@ -38,19 +38,39 @@ def _run(coro):
 
 
 # --------------------------------------------------------------------------- #
-# 0. Fixed download root (course-data/raw) + retained -d freedom
+# 0. Course-centric download identity (stable course_id from the Moodle URL)
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("url,expected", [
+    ("https://mytimes.taylors.edu.my/course/view.php?id=47164", "mytimes-47164"),
+    ("https://mytimes.taylors.edu.my/course/view.php?id=47163", "mytimes-47163"),
+    ("https://mytimes.taylors.edu.my/course/view.php?id=123&course=2", "mytimes-123"),
+])
+def test_course_id_from_url(url, expected):
+    assert v4.course_id_from_url(url) == expected
+
+
+@pytest.mark.parametrize("url", [
+    "https://mytimes.taylors.edu.my/",
+    "https://mytimes.taylors.edu.my/course/view.php",
+    "https://mytimes.taylors.edu.my/course/view.php?name=47164",
+    "",
+    None,
+])
+def test_course_id_from_url_missing_id_is_none(url):
+    assert v4.course_id_from_url(url) is None
+
+
 def test_default_downloads_root_points_at_course_data_raw():
     assert v4.DEFAULT_DOWNLOADS_ROOT == ROOT / "course-data" / "raw"
 
 
 def test_parse_args_default_downloads_dir_is_course_data_raw():
-    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=1"])
+    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=47164"])
     assert args.downloads_dir == str(v4.DEFAULT_DOWNLOADS_ROOT)
 
 
 def test_parse_args_still_accepts_custom_downloads_dir():
-    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=1",
+    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=47164",
                           "-d", "/tmp/custom-downloads"])
     assert args.downloads_dir == "/tmp/custom-downloads"
 
