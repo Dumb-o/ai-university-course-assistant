@@ -45,6 +45,7 @@ Embeddings / vector search are a **future phase** (Phase 2), not part of the MVP
 ```text
 scrape_script/
 ├── mytimes_scraper_v3.py   # CURRENT: v2 + FIXED download (response interception; open OR download mode)
+├── mytimes_scraper_v4.py   # CONSOLIDATED v3: same behavior, factored pure helpers + tests/ harness
 ├── mytimes_scraper_v2.py   # download via page.expect_download() (fails on "open in browser" resources)
 ├── mytimes_scraper_v1.py   # card-scoped enriched link scraper (Functions 1-3, no download)
 ├── mytimes_scraper_v0.py   # earlier baseline: flat "every <a href>" scraper
