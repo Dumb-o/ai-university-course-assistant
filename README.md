@@ -46,6 +46,7 @@ Embeddings / vector search are a **future phase** (Phase 2), not part of the MVP
 
 ```text
 scrape_script/
+
 ├── mytimes_scraper_v4.py   # CURRENT: consolidated v3; course-id download dirs (course-data/raw/<course_id>/)
 ├── mytimes_scraper_v3.py   # ARCHIVED: v2 + FIXED download (response interception; open OR download mode)
 ├── mytimes_scraper_v2.py   # download via page.expect_download() (fails on "open in browser" resources)
@@ -78,6 +79,7 @@ architecture is **course-centric**: the Moodle course id is the stable machine
 identity, the human-readable course name is only descriptive metadata. v1–v3
 are read-only archives; v4 is the maintained current version.
 
+
 ## Data ingestion (file inventory)
 
 One `generate_inventory.py` invocation processes **exactly one course**. The
@@ -102,6 +104,7 @@ reset to `pending` for reprocessing, and the registry never gets duplicates.
 
 - Python 3.14+ and a virtual environment
 - Playwright + Chromium
+
 
 ## Running the scraper (v4 — downloads into `course-data/raw/<course_id>/`)
 
@@ -169,6 +172,7 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Card-scoped extractor reads real names + sections (Option A) | Implemented + verified against `Block_example.html` |
 | `kind` from `modtype_*` class; `download` flag set from "File" suffix | Implemented + verified |
 | Download into section folder tree + filename from scraped name | Implemented + verified (Function 4 in v2/v3) |
+| Default download root = `course-data/raw/` (repo-anchored) | Implemented in v4 (`DEFAULT_DOWNLOADS_ROOT`); `-d` still overrides |
 | Deduplication (skip-if-exists on re-run) | Implemented + verified |
 | Open-in-browser resources captured (v3 fix: route.fetch) | Implemented + verified (was the v2 gap) |
 | Extension hardening (no `.php`/script ext; magic-bytes sniff) | Implemented + verified (Week 10/9 `.php` bug fixed) |
