@@ -10,6 +10,8 @@ The goal of the first working system:
 
 The first version prioritizes **working reliably over sophistication**. Complex autonomous agents, advanced RAG, sophisticated reranking, embedding pipelines, automatic course discovery and search-engine crawling are intentionally **out of scope** for the MVP.
 
+**Status:** Moodle acquisition is completed/prototyped; the raw corpus lives in `course-data/raw/`; the **file inventory** is implemented (`data_ingestion/inventory/generate_inventory.py` → `course-data/metadata/file_inventory.json`). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`).
+
 ## Planned pipeline
 
 ```text
@@ -51,9 +53,36 @@ scrape_script/
 ├── mytimes_scraper_v0.py   # earlier baseline: flat "every <a href>" scraper
 ├── mytimes_scraper.py      # RETIRED 4-function build — slated for deletion, do not use
 └── scrape_links_base.py     # prototype: unauthenticated requests scraper (does NOT work on Moodle)
+course-data/
+├── raw/                    # original downloaded Moodle files (READ-ONLY, canonical raw source)
+└── metadata/
+    └── file_inventory.json # generated manifest of every file under raw/ (SHA-256, doc ids, status)
+data_ingestion/
+├── inventory/
+│   └── generate_inventory.py   # file inventory generator (IMPLEMENTED)
+└── TIKA_ARCHITECTURE_PLAN.md   # Apache Tika integration design (PLAN ONLY — not installed)
 Block_example.html           # saved course-content HTML block used to validate the extractor
 Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1/v2/v3)
 ```
+
+The scraper (`scrape_script/`) handles **course acquisition**; the ingestion
+layer (`data_ingestion/`) handles **processing downloaded documents**. The
+scraper is a completed, working component and is treated as read-only.
+
+## Data ingestion (file inventory)
+
+The raw corpus is `course-data/raw/` (relocated unchanged from
+`scrape_script/downloads/`). Generate/refresh the inventory:
+
+```bash
+python3 data_ingestion/inventory/generate_inventory.py
+# writes course-data/metadata/file_inventory.json
+```
+
+Each entry records the filename, relative path, extension, MIME type, size,
+course, section/week, source directory, a deterministic `document_id`, a
+SHA-256 content hash of the actual file bytes, and `processing_status: pending`.
+Every file is inventoried regardless of whether extraction supports it yet.
 
 ## Prerequisites
 
@@ -117,11 +146,14 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Extension hardening (no `.php`/script ext; magic-bytes sniff) | Implemented + verified (Week 10/9 `.php` bug fixed) |
 | HTML link/Page wrapper skipped (not saved as file) | Implemented + verified |
 | Resource resolution mechanism is fully understood | Mostly (mod:resource → file served via pluginfile.php; live run may need tweaks) |
-| Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials |
+| Raw corpus stored under `course-data/raw/` | Implemented (relocated from `scrape_script/downloads/`, verified lossless) |
+| File inventory of the raw corpus | Implemented (`data_ingestion/inventory/generate_inventory.py` → `course-data/metadata/file_inventory.json`) |
+| Apache Tika extraction | Not implemented — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`) |
+| Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → extraction → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → extraction → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.
