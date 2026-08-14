@@ -30,9 +30,29 @@ from mock_responses import (
     VIEW_HTML_PAGE,
 )
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+# --------------------------------------------------------------------------- #
+# 0. Fixed download root (course-data/raw) + retained -d freedom
+# --------------------------------------------------------------------------- #
+def test_default_downloads_root_points_at_course_data_raw():
+    assert v4.DEFAULT_DOWNLOADS_ROOT == ROOT / "course-data" / "raw"
+
+
+def test_parse_args_default_downloads_dir_is_course_data_raw():
+    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=1"])
+    assert args.downloads_dir == str(v4.DEFAULT_DOWNLOADS_ROOT)
+
+
+def test_parse_args_still_accepts_custom_downloads_dir():
+    args = v4.parse_args(["https://mytimes.taylors.edu.my/course/view.php?id=1",
+                          "-d", "/tmp/custom-downloads"])
+    assert args.downloads_dir == "/tmp/custom-downloads"
 
 
 # --------------------------------------------------------------------------- #
