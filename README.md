@@ -46,8 +46,8 @@ Embeddings / vector search are a **future phase** (Phase 2), not part of the MVP
 
 ```text
 scrape_script/
-├── mytimes_scraper_v3.py   # CURRENT: v2 + FIXED download (response interception; open OR download mode)
-├── mytimes_scraper_v4.py   # CONSOLIDATED v3: same behavior, factored pure helpers + tests/ harness
+├── mytimes_scraper_v4.py   # CURRENT: consolidated v3 + tested; downloads default to course-data/raw/
+├── mytimes_scraper_v3.py   # ARCHIVED: v2 + FIXED download (response interception; open OR download mode)
 ├── mytimes_scraper_v2.py   # download via page.expect_download() (fails on "open in browser" resources)
 ├── mytimes_scraper_v1.py   # card-scoped enriched link scraper (Functions 1-3, no download)
 ├── mytimes_scraper_v0.py   # earlier baseline: flat "every <a href>" scraper
@@ -67,7 +67,8 @@ Links_and_their_meaning.md   # per-link download/skip annotations (the design so
 
 The scraper (`scrape_script/`) handles **course acquisition**; the ingestion
 layer (`data_ingestion/`) handles **processing downloaded documents**. The
-scraper is a completed, working component and is treated as read-only.
+scraper is a completed, working component; v1–v3 are treated as read-only
+archives, while v4 is the maintained current version.
 
 ## Data ingestion (file inventory)
 
@@ -89,16 +90,22 @@ Every file is inventoried regardless of whether extraction supports it yet.
 - Python 3.14+ and a virtual environment
 - Playwright + Chromium
 
-## Running the scraper (v3 — includes the fixed download)
+## Running the scraper (v4 — downloads into `course-data/raw/`)
 
 ```bash
 source .venv/bin/activate
 pip install playwright beautifulsoup4 requests fastapi uvicorn
 playwright install chromium
-python3 scrape_script/mytimes_scraper_v3.py "https://mytimes.taylors.edu.my/course/view.php?id=47163"
+python3 scrape_script/mytimes_scraper_v4.py "https://mytimes.taylors.edu.my/course/view.php?id=47163"
 ```
 
 MyTIMES authenticates via a **Taylor's Microsoft account** (MFA required). The script opens a visible Chromium window; complete email + password + MFA in the browser. **No Enter press is needed** — once you finish login and the URL leaves the Microsoft login page, the scraper automatically collects the course's activity links (scoped to the Moodle activity cards) and then downloads the marked files into a section folder tree.
+
+**Download destination:** by default files are saved to `course-data/raw/<Course Name>/<Section>/<name>.<ext>` (anchored to the repo, not the working directory) — exactly the corpus the ingestion inventory scans. `-d` remains available to override with a custom root for other use cases. After a download run, regenerate the inventory:
+
+```bash
+python3 data_ingestion/inventory/generate_inventory.py
+```
 
 ### Command-line options
 
@@ -107,27 +114,27 @@ Positional argument:
 
 Flags:
 ```bash
-python3 scrape_script/mytimes_scraper_v3.py "URL"
-python3 scrape_script/mytimes_scraper_v3.py "URL" -o custom_links.json      # JSON output path (default: mytimes_links.json)
-python3 scrape_script/mytimes_scraper_v3.py "URL" -d ./my_downloads        # download root folder (default: ./downloads)
-python3 scrape_script/mytimes_scraper_v3.py "URL" --no-download            # collect links only, skip downloading
+python3 scrape_script/mytimes_scraper_v4.py "URL"
+python3 scrape_script/mytimes_scraper_v4.py "URL" -o custom_links.json      # JSON output path (default: mytimes_links.json)
+python3 scrape_script/mytimes_scraper_v4.py "URL" -d ./somewhere_else       # override download root (default: course-data/raw)
+python3 scrape_script/mytimes_scraper_v4.py "URL" --no-download            # collect links only, skip downloading
 ```
 
-- Each file is saved to `downloads/<Course Name>/<Section>/<name>.<ext>` — the `<Course Name>` folder is taken from the page title (e.g. `Course: Software Testing (202605-Lecture) | myTimes` → `Software Testing (202605-Lecture)`), the `<Section>` folder mirrors the site's week/subsection organization (e.g. `General/`, `Week 2/`, `Software Sustainment MLO2/`, `MLO3 - Group Project 40%/`), and the filename is the scraped `name`. **Deduplication:** if the target file already exists it is skipped, so re-runs are safe and never create duplicates.
+- Each file is saved to `<downloads_root>/<Course Name>/<Section>/<name>.<ext>` — the `<Course Name>` folder is taken from the page title (e.g. `Course: Software Testing (202605-Lecture) | myTimes` → `Software Testing (202605-Lecture)`), the `<Section>` folder mirrors the site's week/subsection organization (e.g. `General/`, `Week 2/`, `Software Sustainment MLO2/`, `MLO3 - Group Project 40%/`), and the filename is the scraped `name`. The default `<downloads_root>` is `course-data/raw/`. **Deduplication:** if the target file already exists it is skipped, so re-runs are safe and never create duplicates.
 >
 > **v3 download fix (open-in-browser + `.php`):**
 > - Open-in-browser resources (file renders instead of downloading) are captured via request routing (`page.route` + `route.fetch()`), so both force-download and open modes save correctly.
 > - Extension hardening: files are NEVER saved with a script/`.php` extension. The extension is taken from the Content-Disposition filename, then a real document URL extension, then Content-Type, then **magic-bytes sniff** of the file body. This fixes the Week 10 (ppt → was `.php`) and Week 9 cases. An HTML link/Page wrapper (not a real document) is detected and skipped, not saved as a file.
 
-### Script structure (`scrape_script/mytimes_scraper_v3.py`)
-- `open_browser_at(url, output, downloads_dir, do_download)` — Functions 1 + 2: launch Chromium (visible), navigate, wait for manual auth, then run 3 + 4.
+### Script structure (`scrape_script/mytimes_scraper_v4.py`)
+- `open_browser_at(url, output, downloads_dir=DEFAULT_DOWNLOADS_ROOT, do_download)` — Functions 1 + 2: launch Chromium (visible), navigate, wait for manual auth, then run 3 + 4. `DEFAULT_DOWNLOADS_ROOT` is the repo-anchored `course-data/raw/`.
 - `scrape_links(page, base_url)` — Function 3: card-scoped extractor (same as v1/v2): `modtype_*` class (kind), `data-activityname` (name), `a.aalink` href (url), nearest `li.section` (section), hidden "File"/"Page" suffix (file_type), and the `download` flag.
 - `download_link(page, link, downloads_dir)` — Function 4: open the `mod/resource` page in the authenticated session, capture the file via request routing (`route.fetch()`), save into the section folder with the scraped name + extension. Works for both force-download and open-in-browser resources.
 - `download_documents(page, links, downloads_dir)` — Function 4: loops over `download: true` links, returns per-link results (downloaded / skipped / error).
 - `looks_like_login(url)` / `wait_for_authenticated(page)` — detect when login is done (no Enter needed).
 - `SKIP_KINDS` — module types that are NOT downloads.
 
-v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2.py`) is the pre-fix downloader (fails on open-in-browser resources).
+v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2.py`) is the pre-fix downloader (fails on open-in-browser resources). v3 was the first fixed-downloader; v4 consolidates it and is the current version.
 
 ## Known facts & unknowns
 
@@ -141,6 +148,7 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Card-scoped extractor reads real names + sections (Option A) | Implemented + verified against `Block_example.html` |
 | `kind` from `modtype_*` class; `download` flag set from "File" suffix | Implemented + verified |
 | Download into section folder tree + filename from scraped name | Implemented + verified (Function 4 in v2/v3) |
+| Default download root = `course-data/raw/` (repo-anchored) | Implemented in v4 (`DEFAULT_DOWNLOADS_ROOT`); `-d` still overrides |
 | Deduplication (skip-if-exists on re-run) | Implemented + verified |
 | Open-in-browser resources captured (v3 fix: route.fetch) | Implemented + verified (was the v2 gap) |
 | Extension hardening (no `.php`/script ext; magic-bytes sniff) | Implemented + verified (Week 10/9 `.php` bug fixed) |

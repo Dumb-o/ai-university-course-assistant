@@ -10,7 +10,10 @@ _dedup_existing(), save_captured_file(). Every observable action of v3 is preser
 (verified by tests/test_scraper_v4.py).
 
 Usage:
-    python3 mytimes_scraper_v4.py <URL> [-o mytimes_links.json] [-d ./downloads]
+    python3 mytimes_scraper_v4.py <URL> [-o mytimes_links.json] [-d <custom root>]
+
+Downloads land in `DEFAULT_DOWNLOADS_ROOT/<Course Name>/<Section>/<name>.<ext>`
+(`<repo>/course-data/raw/...`) unless `-d` points elsewhere.
 """
 
 import argparse  # Reading command line arguments
@@ -22,6 +25,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
+
+# Default download root, anchored to the project (not the working directory):
+# downloads land in course-data/raw/<Course Name>/<Section>/<name>.<ext>, which
+# is exactly the corpus the ingestion inventory scans. `-d` still overrides this.
+DEFAULT_DOWNLOADS_ROOT = Path(__file__).resolve().parents[1] / "course-data" / "raw"
 
 # Direct file-download links (fallback signal when file_type suffix is missing).
 FILE_EXT = re.compile(r"\.(pdf|docx?|pptx?|xlsx?|csv|png|jpe?g|gif|zip|txt|html?)$", re.I)
@@ -444,7 +452,8 @@ async def wait_for_authenticated(page, timeout=300):
         print(f"[login] not authenticated after {timeout // 60} minutes; continuing anyway")
 
 
-async def open_browser_at(url, output="mytimes_links.json", downloads_dir="downloads", do_download=True):
+async def open_browser_at(url, output="mytimes_links.json",
+                          downloads_dir=DEFAULT_DOWNLOADS_ROOT, do_download=True):
     """FUNCTION 1 (+ Function 2 manual login) then Function 3, then Function 4."""
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=False)
@@ -502,7 +511,7 @@ async def open_browser_at(url, output="mytimes_links.json", downloads_dir="downl
 
 
 # Command-line interface
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "url",
@@ -513,16 +522,16 @@ def parse_args():
         help="output JSON file (default: mytimes_links.json)",
     )
     parser.add_argument(
-        "-d", "--downloads-dir", default="downloads",
-        help="root folder for downloaded files (default: ./downloads)",
+        "-d", "--downloads-dir", default=str(DEFAULT_DOWNLOADS_ROOT),
+        help=f"root folder for downloaded files (default: {DEFAULT_DOWNLOADS_ROOT})",
     )
     parser.add_argument(
         "--no-download", action="store_true",
         help="collect links only; do not download files",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(open_browser_at(args.url, args.output, args.downloads_dir, not args.no_download))
+    asyncio.run(open_browser_at(args.url, args.output, Path(args.downloads_dir), not args.no_download))
