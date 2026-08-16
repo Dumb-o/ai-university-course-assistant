@@ -10,7 +10,7 @@ The goal of the first working system:
 
 The first version prioritizes **working reliably over sophistication**. Complex autonomous agents, advanced RAG, sophisticated reranking, embedding pipelines, automatic course discovery and search-engine crawling are intentionally **out of scope** for the MVP.
 
-**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`).
+**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
 
 ## Planned pipeline
 
@@ -29,7 +29,7 @@ File Download
     ↓
 File Type Detection
     ↓
-Content Extraction (Apache Tika / OCR)
+Content Extraction (PyMuPDF — IMPLEMENTED, PDF-first)
     ↓
 Document Classification
     ↓
@@ -63,12 +63,17 @@ course-data/
 ├── inventories/
 │   └── mytimes-47164/
 │       └── file_inventory.json   # course-specific inventory (SHA-256, doc ids, status)
-├── extracted/              # PLANNED (per-course, future Apache Tika output)
+├── extracted/              # IMPLEMENTED (per-course, structured extraction JSON)
 ├── normalized/             # PLANNED (per-course)
 └── chunks/                 # PLANNED (per-course)
 data_ingestion/
 ├── generate_inventory.py   # course-specific inventory generator (IMPLEMENTED, one course per run)
-└── TIKA_ARCHITECTURE_PLAN.md   # Apache Tika integration design (PLAN ONLY — not installed)
+└── TIKA_ARCHITECTURE_PLAN.md   # Apache Tika integration design (PLAN ONLY — superseded by data_extraction/)
+data_extraction/
+├── extraction_orchestrator.py   # inventory-driven extraction orchestrator (IMPLEMENTED, PDF-first)
+└── extractors/
+    ├── __init__.py              # extension → extractor registry (PDF registered; future formats added here)
+    └── pdf_extractor.py         # structured PDF extraction via PyMuPDF (IMPLEMENTED)
 Block_example.html           # saved course-content HTML block used to validate the extractor
 Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1/v2/v3)
 ```
@@ -100,17 +105,102 @@ deterministic `document_id` (`<course_id>-<slug>`), a SHA-256 content hash, and
 status (matched by hash), new files are added as `pending`, changed files are
 reset to `pending` for reprocessing, and the registry never gets duplicates.
 
+## Structured data extraction (`data_extraction/`)
+
+The **structured data extraction** stage turns inventoried raw files into
+machine-readable JSON, one file per source document. It is a **separate
+pipeline stage** on purpose: acquisition, inventory and extraction are each
+independently maintainable, testable and re-runnable, and none of them ever
+rewrites another stage's output.
+
+**Inventory-driven.** The inventory (`file_inventory.json`) is the source of
+truth for *what* exists in a course. The orchestrator never scans
+`course-data/raw/` on its own — it reads the inventory's `documents` list and
+considers only entries whose `processing_status` is `pending`. The decision
+chain per document is:
+
+```text
+inventory
+    ↓
+pending?
+    ↓
+extension
+    ↓
+registered extractor?
+    ↓
+YES → extract        NO → skip, keep "pending"
+```
+
+**Only the course id is required.** The orchestrator takes the course id
+(`--course-id mytimes-47164`); it does not accept a URL, inventory path or raw
+path, because those are all derived from the architecture:
+
+```bash
+python3 data_extraction/extraction_orchestrator.py --course-id mytimes-47164
+```
+
+- **Registry check first.** The course id is validated against
+  `course-data/metadata/courses.json`. An unknown course stops with a clear
+  error, a non-zero exit, and **no** extraction directory and **no** inventory
+  change. `generate_inventory.py` remains responsible for registering courses.
+- **Inventory lookup.** The inventory is loaded from
+  `course-data/inventories/<course_id>/file_inventory.json`. If it is missing
+  the run fails clearly; it is never auto-generated here.
+- **Raw path resolution.** Each document's `relative_path` is authoritative.
+  The raw file is `course-data/raw/<course_id>/<relative_path>` — never
+  reconstructed from the filename, section or week. The file must exist and be
+  a file, or the document is marked failed. Raw files are **never modified**.
+- **Output mirrors raw.** Extracted JSON is written to
+  `course-data/extracted/<course_id>/<relative_path with a .json suffix>`, so
+  `Week 3/Lecture 3 - Fundamentals of Software Testing.pdf` becomes
+  `extracted/<course_id>/Week 3/Lecture 3 - Fundamentals of Software
+  Testing.json`. Directory parents are created only when a supported document
+  is actually written there, so no empty directories are created.
+- **PDF is the only extractor today.** The `extractors/` package holds an
+  extension → extractor registry. `.pdf` is registered (PyMuPDF: per-page
+  text, text/image blocks with bounding boxes, document metadata, and
+  best-effort native tables). DOCX/PPTX/XLSX/images have **no registered
+  extractor yet**, so they are skipped and stay `pending` — they are waiting
+  for a future extractor, not errors. Future formats are added by creating
+  `extractors/<format>_extractor.py` (same `extract(file_path, document)`
+  interface) and registering the extension in `extractors/__init__.py`.
+- **Status lifecycle.** `pending` → `extracted` on success; `pending` →
+  `extraction_failed` (with an `extraction_error`) on failure. Unsupported
+  files remain `pending`. The inventory is written back **atomically** (temp
+  file → fsync → replace) after every document, so a crash never corrupts it.
+- **Idempotent.** Only `pending` documents are ever processed, so re-running
+  does nothing to already-`extracted` files. Unsupported files stay `pending`
+  on every run.
+- **One-document test mode.** `--limit 1` processes a single pending PDF, and
+  `--document-id <id>` targets one specific document — useful for inspecting
+  one extracted JSON before processing a whole course:
+
+```bash
+python3 data_extraction/extraction_orchestrator.py --course-id mytimes-47164 --limit 1
+python3 data_extraction/extraction_orchestrator.py \
+    --course-id mytimes-47164 --document-id mytimes-47164-general-module-information-mi-pdf
+```
+
+**IMPLEMENTED NOW:** PDF extraction (PyMuPDF), PDF routing, inventory-driven
+processing, extracted output mirroring `raw/`, atomic `processing_status`
+updates, idempotent re-runs, single-document test mode.
+
+**FUTURE:** DOCX, PPTX, XLSX and image/OCR extractors, richer table extraction,
+then normalization, classification, chunking, embeddings and the knowledge
+base.
+
 ## Prerequisites
 
 - Python 3.14+ and a virtual environment
-- Playwright + Chromium
+- Playwright + Chromium (scraper)
+- PyMuPDF (`pymupdf`) for the PDF extractor
 
 
 ## Running the scraper (v4 — downloads into `course-data/raw/<course_id>/`)
 
 ```bash
 source .venv/bin/activate
-pip install playwright beautifulsoup4 requests fastapi uvicorn
+pip install playwright beautifulsoup4 requests fastapi uvicorn pymupdf
 playwright install chromium
 python3 scrape_script/mytimes_scraper_v4.py "https://mytimes.taylors.edu.my/course/view.php?id=47164"
 ```
@@ -185,12 +275,14 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Course-specific inventory (`course-data/inventories/<course_id>/file_inventory.json`) | Implemented (`data_ingestion/generate_inventory.py --course-dir …`; one course per run) |
 | Incremental inventory (hash-based add/unchanged/changed) | Implemented + verified (unchanged files keep status; new = pending; changed = pending) |
 | Legacy global inventory migrated + archived | Implemented (`metadata/archive/file_inventory.global.json`, 31 hashes carried over) |
-| Apache Tika extraction | Not implemented — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`) |
+| Structured data extraction (`data_extraction/`, inventory-driven) | Implemented (PDF-first via PyMuPDF; per-page text/blocks/bboxes/metadata + best-effort tables) |
+| Structured extraction output in `course-data/extracted/<course_id>/` | Implemented (mirrors `raw/` relative structure; statuses updated atomically) |
+| Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF) |
 | Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → extraction → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done, PDF-first)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.
