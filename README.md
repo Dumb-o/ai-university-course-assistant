@@ -10,7 +10,7 @@ The goal of the first working system:
 
 The first version prioritizes **working reliably over sophistication**. Complex autonomous agents, advanced RAG, sophisticated reranking, embedding pipelines, automatic course discovery and search-engine crawling are intentionally **out of scope** for the MVP.
 
-**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). A **V2 semantic extraction pipeline** (`extraction_orchestratorv2.py` + `pdf_extractorv2.py`) now also runs alongside v1, writing a source-preserving + semantic representation into `course-data/extracted_v2/<course_id>/` for comparison. Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
+**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). A **V2 semantic extraction pipeline** (`extraction_orchestratorv2.py` + `pdf_extractorv2.py`) now also runs alongside v1, writing a source-preserving + semantic representation into `course-data/extracted_v2/<course_id>/` for comparison. Legacy Microsoft Office files (`.doc`/`.ppt`/`.xls`) are supported via **LibreOffice headless conversion** to their modern equivalents before the existing v2 extractor runs (see "Legacy Microsoft Office Format Handling" below). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
 
 ## Planned pipeline
 
@@ -73,10 +73,11 @@ data_ingestion/
 └── TIKA_ARCHITECTURE_PLAN.md   # Apache Tika integration design (PLAN ONLY — superseded by data_extraction/)
 data_extraction/
 ├── extraction_orchestrator.py   # inventory-driven extraction orchestrator v1 (IMPLEMENTED, PDF-first)
-├── extraction_orchestratorv2.py # semantic extraction orchestrator v2 (IMPLEMENTED, parallel to v1)
+├── extraction_orchestratorv2.py # semantic extraction orchestrator v2 (IMPLEMENTED, parallel to v1; routes .doc/.ppt/.xls via LibreOffice)
+├── legacy_conversion.py         # LibreOffice headless conversion + legacy format registry (IMPLEMENTED)
 └── extractors/
     ├── __init__.py              # extension → extractor registry (v1: PDF; v2: PDF/DOCX/PPTX/XLSX)
-    ├── _v2common.py             # v2 shared helpers (clean-text normalization, semantic paragraph model)
+    ├── _v2common.py             # v2 shared helpers (document identity + JSON-safe serialization)
     ├── pdf_extractor.py         # structured PDF extraction via PyMuPDF — v1 (IMPLEMENTED)
     ├── pdf_extractorv2.py       # semantic PDF extraction via PyMuPDF — v2 (IMPLEMENTED)
     ├── docx_extractorv2.py      # semantic DOCX extraction via python-docx — v2 (IMPLEMENTED)
@@ -216,8 +217,12 @@ v2: extraction_orchestratorv2.py + extractors/*_extractorv2.py   → extracted_v
   (`file_inventory.json`) — both update `processing_status` identically.
 - **Multi-format.** v2 registers extractors for **`.pdf` (PyMuPDF)**,
   **`.docx` (python-docx)**, **`.pptx` (python-pptx)** and **`.xlsx`
-  (openpyxl)**. Everything else stays `pending` and is reported under
-  `Unsupported:` (grouped by extension) instead of being marked failed.
+  (openpyxl)**. Legacy Office files (**`.doc`**, **`.ppt`**, **`.xls`**) are
+  supported too: the orchestrator converts them to `.docx`/`.pptx`/`.xlsx`
+  with **LibreOffice headless** in a temporary directory, then runs the
+  existing v2 extractor on the converted file (see "Legacy Microsoft Office
+  Format Handling" below). Everything else stays `pending` and is reported
+  under `Unsupported:` (grouped by extension) instead of being marked failed.
 - **Different representation.** v2 builds a **semantic** document model:
   `structure` (headings/paragraphs/lists/tables with roles and levels),
   `content` (a linear markdown document with headings, lists, fenced code
@@ -245,13 +250,74 @@ python3 data_extraction/extraction_orchestratorv2.py --course-id mytimes-47164
 
 **IMPLEMENTED NOW:** parallel v2 pipeline, semantic `structure`/`content`/
 `tables`/`source`, `source_extraction` provenance, same lifecycle and safety
-rules, DOCX/PPTX/XLSX v2 extractors, per-format output under the same
-mirrored relative path as v1, unsupported-file reporting, 36 unit/integration
-tests in `tests/test_extraction_v2.py` + `tests/test_extraction_v2_formats.py`.
+rules, DOCX/PPTX/XLSX v2 extractors, legacy `.doc`/`.ppt`/`.xls` handling via
+LibreOffice conversion (temp directory, provenance-tagged, failures isolated),
+per-format output under the same mirrored relative path as v1,
+unsupported-file reporting, `--dry-run`, 76 unit/integration tests in
+`tests/test_extraction_v2.py` + `tests/test_extraction_v2_formats.py` +
+`tests/test_extraction_v2_legacy.py`.
 
 **FUTURE:** image/OCR extractors, richer table extraction, `--format`
 selection (v1|v2|both), then the v2 semantic model feeds
 normalization/classification.
+
+## Legacy Microsoft Office Format Handling
+
+`.doc`, `.ppt` and `.xls` are the OLE2 binary container formats of Microsoft
+Office 2003 and earlier; modern `.docx`/`.pptx`/`.xlsx` are ZIP-based OOXML.
+The v2 extractors read OOXML only (`python-docx`/`python-pptx`/`openpyxl`), so
+legacy files are **converted to their modern equivalent with LibreOffice
+headless** and then run through the **existing** v2 extractor — no separate
+legacy extractors, and the modern extractors stay untouched.
+
+```text
+.doc ──LibreOffice headless──▶ .docx ──▶ docx_extractorv2.py
+.ppt ──LibreOffice headless──▶ .pptx ──▶ pptx_extractorv2.py
+.xls ──LibreOffice headless──▶ .xlsx ──▶ xlsx_extractorv2.py
+```
+
+- **Routing** (`extraction_orchestratorv2._route_document`): the file
+  extension is authoritative; the MIME type from the inventory is used only as
+  a fallback for missing/unrecognized extensions. Supported set:
+  `.pdf .doc .docx .ppt .pptx .xls .xlsx`.
+- **Temporary conversion directory.** Each run creates
+  `tempfile.TemporaryDirectory(prefix="v2_conversion_")` (system temp,
+  *outside* `course-data/raw/`), converts each legacy file into its own
+  sanitized sub-directory, and deletes the whole tree automatically at the end
+  (success or failure). `course-data/raw/` is never written to.
+- **Original identity preserved.** The extracted JSON uses the **original**
+  filename and relative path (`Week 5/Lecture 5 Lab.json`, never
+  `.docx.json`); `document.document_id`/`filename`/`relative_path` refer to the
+  `.doc`/`.ppt`/`.xls` source file.
+- **Provenance.** Legacy results carry a `conversion` block
+  (`tool: "LibreOffice"`, source/target format, `status: "success"`) and a
+  richer `source` (`format`, `mime_type`, `extension`, `extraction_format`);
+  `extraction.extractor` names the v2 extractor that actually ran
+  (e.g. `docx_extractorv2`). Modern files get no conversion block and their
+  output is byte-identical to before.
+- **Failure isolation.** A legacy file that LibreOffice cannot convert (e.g. a
+  truncated OLE file) is reported as `failed (conversion_failed): <stderr>`,
+  writes no output (so it stays retryable), and the batch continues; the
+  original file is preserved. If legacy files exist but LibreOffice is not
+  installed, a warning is printed and they are left untouched — LibreOffice is
+  **never auto-installed**.
+- **Why not Tika?** The earlier plan in `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`
+  called for Apache Tika to read legacy formats. Tika is Java-based and adds
+  heavyweight extraction for everything; converting only the three legacy
+  formats with LibreOffice reuses the already-tested v2 extractors and keeps
+  Tika (and OCR, chunking, embeddings) out of the pipeline.
+- **Testing.** `tests/test_extraction_v2_legacy.py` generates *genuine* legacy
+  files by reverse-converting real DOCX/PPTX/XLSX fixtures with LibreOffice,
+  then exercises routing, extraction, provenance, hierarchy mirroring, failure
+  isolation, missing-LibreOffice fallback, temp-directory cleanup, `--dry-run`
+  and document-id targeting. The suite skips automatically when LibreOffice is
+  absent.
+
+The real `mytimes-47163` course (11 `.doc` + 12 `.ppt`, no `.xls`) was
+extracted end-to-end with 0 failures. The `.xls` path is covered by the
+automated test above and by a throwaway temp-course procedure that generates a
+real `.xls` and runs the orchestrator against it (see the test file for the
+exact recipe).
 
 ## Prerequisites
 
@@ -259,6 +325,8 @@ normalization/classification.
 - Playwright + Chromium (scraper)
 - PyMuPDF (`pymupdf`) for the PDF extractor (v1 + v2)
 - `python-docx`, `python-pptx`, `openpyxl` for the v2 DOCX/PPTX/XLSX extractors
+- **LibreOffice** (`libreoffice` or `soffice` on PATH) for legacy `.doc`/`.ppt`/`.xls`
+  conversion in v2 (`legacy_conversion.py` detects it; the v2 legacy tests skip if absent)
 
 
 ## Running the scraper (v4 — downloads into `course-data/raw/<course_id>/`)
@@ -343,15 +411,16 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Structured data extraction (`data_extraction/`, inventory-driven) | Implemented (PDF-first via PyMuPDF; per-page text/blocks/bboxes/metadata + best-effort tables) |
 | Structured extraction output in `course-data/extracted/<course_id>/` | Implemented (mirrors `raw/` relative structure; statuses updated atomically) |
 | Structured extraction **v2** (semantic model, parallel pipeline) | Implemented (`extraction_orchestratorv2.py` + `pdf_extractorv2.py` → `course-data/extracted_v2/<course_id>/`; structure/content/tables/source + provenance) |
-| v2 **DOCX/PPTX/XLSX** extractors (`python-docx`/`python-pptx`/`openpyxl`) | Implemented + verified end-to-end on both courses (36 + 6 supported docs, 0 failures; unsupported `.doc`/`.ppt`/images stay `pending`) |
+| v2 **DOCX/PPTX/XLSX** extractors (`python-docx`/`python-pptx`/`openpyxl`) | Implemented + verified end-to-end on both courses (36 + 6 supported docs, 0 failures) |
+| v2 legacy **`.doc`/`.ppt`/`.xls`** via LibreOffice headless conversion | Implemented + verified (real `mytimes-47163` run: 23 legacy docs, 0 failures; `.xls` via automated test + temp-course procedure; see "Legacy Microsoft Office Format Handling") |
 | v2 list detection (real `numPr`/`ilvl` list numbering) | Implemented + verified (Boundary Value Analysis.docx numbered lists → `list: number`, bullets → `bullet`) |
 | Inventory safety: pipelines never write to `generate_inventory.py` inputs | Corrected — v1/v2 both re-hash raw and write only their own output tree (see design doc §12) |
-| Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF) |
+| Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF + LibreOffice for legacy Office formats) |
 | Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done: v1 PDF-first + v2 semantic pipeline with PDF/DOCX/PPTX/XLSX extractors, parallel)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done: v1 PDF-first + v2 semantic pipeline with PDF/DOCX/PPTX/XLSX extractors, parallel, plus legacy `.doc`/`.ppt`/`.xls` via LibreOffice conversion)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.

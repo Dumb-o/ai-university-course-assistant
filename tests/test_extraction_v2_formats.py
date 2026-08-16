@@ -62,9 +62,9 @@ def make_multi_format_repo(tmp_path, with_unsupported=True):
         doc_record("Week 3/Test Case Example 1.xlsx", status="pending"),
     ]
     if with_unsupported:
-        (raw / "Week 10" / "Legacy Lecture.xls").parent.mkdir(parents=True, exist_ok=True)
-        (raw / "Week 10" / "Legacy Lecture.xls").write_bytes(b"xls-bytes")
-        documents.append(doc_record("Week 10/Legacy Lecture.xls", status="pending"))
+        (raw / "Week 10" / "Notes.txt").parent.mkdir(parents=True, exist_ok=True)
+        (raw / "Week 10" / "Notes.txt").write_text("plain text notes", encoding="utf-8")
+        documents.append(doc_record("Week 10/Notes.txt", status="pending"))
 
     write_inventory(tmp_path, documents)
     write_registry(tmp_path, [COURSE_ID])
@@ -111,7 +111,9 @@ def test_registry_routing_returns_classes():
 
 
 @pytest.mark.parametrize("extension", [".doc", ".ppt", ".xls", ".jpg", ".png", ".txt", None])
-def test_registry_unsupported_extensions_return_none(extension):
+def test_registry_extensions_without_direct_extractor_return_none(extension):
+    # .doc/.ppt/.xls have no *direct* v2 extractor either: they are handled by
+    # the orchestrator via LibreOffice conversion (see test_extraction_v2_legacy.py).
     assert get_extractor_v2(extension) is None
 
 
@@ -341,7 +343,7 @@ def test_orchestrator_reports_counts(capsys, tmp_path):
     assert "DOCX: 1" in output
     assert "PPTX: 1" in output
     assert "XLSX: 1" in output
-    assert "XLS: 1" in output
+    assert "TXT: 1" in output
     assert "Documents extracted now: 4" in output
     assert "Unsupported files skipped: 1" in output
 
@@ -385,13 +387,13 @@ def test_orchestrator_document_id_targets_non_pdf(tmp_path):
 
 def test_orchestrator_document_id_unsupported_type_reports_nothing(tmp_path, capsys):
     repo = make_multi_format_repo(tmp_path, with_unsupported=True)
-    xls_id = next(
+    txt_id = next(
         d["document_id"] for d in json.loads(
             (repo / "inventories" / COURSE_ID / "file_inventory.json").read_text("utf-8")
         )["documents"]
-        if d["relative_path"] == "Week 10/Legacy Lecture.xls"
+        if d["relative_path"] == "Week 10/Notes.txt"
     )
-    assert run_extraction(COURSE_ID, data_root=repo, document_id=xls_id) == 0
+    assert run_extraction(COURSE_ID, data_root=repo, document_id=txt_id) == 0
     assert "has no v2 extractor" in capsys.readouterr().out
     assert not (repo / "extracted_v2" / COURSE_ID / "Week 10").exists()
 

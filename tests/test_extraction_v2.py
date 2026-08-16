@@ -245,8 +245,8 @@ def repo(tmp_path):
     make_docx(raw / "Week 9" / "Boundary Value Analysis.docx")
     make_pptx(raw / "Week 8" / "Configuration Audits for Testing Quality.pptx")
     make_xlsx(raw / "Week 3" / "Test Case Example 1.xlsx")
-    (raw / "Week 10" / "Legacy Lecture.xls").parent.mkdir(parents=True, exist_ok=True)
-    (raw / "Week 10" / "Legacy Lecture.xls").write_bytes(b"xls-bytes")
+    (raw / "Week 10" / "Notes.txt").parent.mkdir(parents=True, exist_ok=True)
+    (raw / "Week 10" / "Notes.txt").write_text("plain text notes", encoding="utf-8")
 
     documents = [
         doc_record("Group Assignment/Group Assignment.pdf", status="extracted"),
@@ -254,7 +254,7 @@ def repo(tmp_path):
         doc_record("Week 3/Test Case Example 1.xlsx", status="pending"),
         doc_record("Week 8/Configuration Audits for Testing Quality.pptx", status="pending"),
         doc_record("Week 9/Boundary Value Analysis.docx", status="pending"),
-        doc_record("Week 10/Legacy Lecture.xls", status="pending"),
+        doc_record("Week 10/Notes.txt", status="pending"),
     ]
     write_inventory(tmp_path, documents)
     write_registry(tmp_path, [COURSE_ID])
@@ -491,11 +491,11 @@ def test_v2_unsupported_files_untouched_and_inventory_unchanged(repo):
     before = inv_path.read_bytes()
     assert run_extraction(COURSE_ID, data_root=repo) == 0
 
-    # The unsupported .xls file is skipped (no v2 extractor) and never fails.
+    # The unsupported .txt file is skipped (no v2 extractor) and never fails.
     assert not (repo / "extracted_v2" / COURSE_ID / "Week 10").exists()
     assert inv_path.read_bytes() == before
     statuses = {d["relative_path"]: d["processing_status"] for d in load_inventory_docs(repo)}
-    assert statuses["Week 10/Legacy Lecture.xls"] == "pending"
+    assert statuses["Week 10/Notes.txt"] == "pending"
 
     # The supported DOCX/PPTX/XLSX in the same inventory ARE extracted.
     v2_root = repo / "extracted_v2" / COURSE_ID
