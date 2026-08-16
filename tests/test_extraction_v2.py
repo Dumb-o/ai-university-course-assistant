@@ -28,8 +28,11 @@ try:
 except ImportError:
     import fitz
 
+from docx import Document as DocxDocument
 from extraction_orchestratorv2 import main, run_extraction
 from extractors.pdf_extractorv2 import VERSION, PdfExtractorV2
+from openpyxl import Workbook
+from pptx import Presentation
 
 COURSE_ID = "mytimes-47164"
 
@@ -111,6 +114,69 @@ def make_semantic_pdf(path: Path) -> Path:
     return path
 
 
+def make_docx(path: Path) -> Path:
+    """A DOCX exercising headings, lists, a paragraph and a table."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = DocxDocument()
+    doc.add_heading("Test Case Design", level=1)
+    doc.add_heading("Equivalence Partitioning", level=2)
+    doc.add_paragraph("Divide input domain into classes that yield equivalent behaviour.")
+    doc.add_paragraph("First partition.", style="List Bullet")
+    doc.add_paragraph("Second partition.", style="List Bullet")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Class"
+    table.cell(0, 1).text = "Example"
+    table.cell(1, 0).text = "Valid"
+    table.cell(1, 1).text = "Age 18-65"
+    doc.save(path)
+    return path
+
+
+def make_pptx(path: Path) -> Path:
+    """A PPTX with two slides, a title, a bulleted text box and a table."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prs = Presentation()
+    slide1 = prs.slides.add_slide(prs.slide_layouts[1])
+    slide1.shapes.title.text = "Static Testing"
+    body = slide1.shapes.placeholders[1].text_frame
+    body.text = "First bullet"
+    body.add_paragraph().text = "Second bullet"
+    slide2 = prs.slides.add_slide(prs.slide_layouts[5])
+    slide2.shapes.title.text = "Review Types"
+    table = slide2.shapes.add_table(2, 2, 720000, 2000000, 4800000, 1600000).table
+    table.cell(0, 0).text = "Type"
+    table.cell(0, 1).text = "Goal"
+    table.cell(1, 0).text = "Informal"
+    table.cell(1, 1).text = "Feedback"
+    try:
+        slide2.notes_slide.notes_text_frame.text = "Speaker notes here."
+    except Exception:  # noqa: BLE001, S110
+        pass
+    prs.save(path)
+    return path
+
+
+def make_xlsx(path: Path) -> Path:
+    """An XLSX with two worksheets, a formula cell and a merged range."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Test Cases"
+    ws["A1"] = "Step"
+    ws["B1"] = "Expected"
+    ws["A2"] = 1
+    ws["B2"] = "System responds"
+    ws["A3"] = 2
+    ws["C3"] = "=SUM(A2:A3)"
+    ws.merge_cells("D1:E1")
+    ws["D1"] = "Merged"
+    ws2 = wb.create_sheet("Checklist")
+    ws2["A1"] = "Item"
+    ws2["A2"] = "Done"
+    wb.save(path)
+    return path
+
+
 def doc_record(relative_path: str, status: str = "pending", **overrides) -> dict:
     ext = Path(relative_path).suffix or None
     record = {
@@ -169,23 +235,26 @@ def write_registry(data_root: Path, course_ids: list[str]) -> Path:
 def repo(tmp_path):
     """A minimal course-data tree for mytimes-47164.
 
-    Two PDFs (one inventory-pending, one inventory-extracted by "v1") plus two
-    unsupported pending files. A pre-existing v1 extracted JSON proves v1
-    output is never touched by v2.
+    A PDF inventory-extracted by "v1", a pending PDF, one DOCX, one PPTX, one
+    XLSX and one genuinely unsupported .xls file. A pre-existing v1 extracted
+    JSON proves v1 output is never touched by v2.
     """
     raw = tmp_path / "raw" / COURSE_ID
     make_semantic_pdf(raw / "Group Assignment" / "Group Assignment.pdf")
     make_pdf(raw / "General" / "Module Information (MI).pdf", ["Module Info Page One", "Module Info Page Two"])
-    (raw / "Week 8" / "Configuration Audits for Testing Quality.pptx").parent.mkdir(parents=True, exist_ok=True)
-    (raw / "Week 8" / "Configuration Audits for Testing Quality.pptx").write_bytes(b"pptx-bytes")
-    (raw / "Week 9" / "Boundary Value Analysis.docx").parent.mkdir(parents=True, exist_ok=True)
-    (raw / "Week 9" / "Boundary Value Analysis.docx").write_bytes(b"docx-bytes")
+    make_docx(raw / "Week 9" / "Boundary Value Analysis.docx")
+    make_pptx(raw / "Week 8" / "Configuration Audits for Testing Quality.pptx")
+    make_xlsx(raw / "Week 3" / "Test Case Example 1.xlsx")
+    (raw / "Week 10" / "Legacy Lecture.xls").parent.mkdir(parents=True, exist_ok=True)
+    (raw / "Week 10" / "Legacy Lecture.xls").write_bytes(b"xls-bytes")
 
     documents = [
         doc_record("Group Assignment/Group Assignment.pdf", status="extracted"),
         doc_record("General/Module Information (MI).pdf", status="pending"),
+        doc_record("Week 3/Test Case Example 1.xlsx", status="pending"),
         doc_record("Week 8/Configuration Audits for Testing Quality.pptx", status="pending"),
         doc_record("Week 9/Boundary Value Analysis.docx", status="pending"),
+        doc_record("Week 10/Legacy Lecture.xls", status="pending"),
     ]
     write_inventory(tmp_path, documents)
     write_registry(tmp_path, [COURSE_ID])
@@ -422,12 +491,17 @@ def test_v2_unsupported_files_untouched_and_inventory_unchanged(repo):
     before = inv_path.read_bytes()
     assert run_extraction(COURSE_ID, data_root=repo) == 0
 
-    assert not (repo / "extracted_v2" / COURSE_ID / "Week 8").exists()
-    assert not (repo / "extracted_v2" / COURSE_ID / "Week 9").exists()
+    # The unsupported .xls file is skipped (no v2 extractor) and never fails.
+    assert not (repo / "extracted_v2" / COURSE_ID / "Week 10").exists()
     assert inv_path.read_bytes() == before
     statuses = {d["relative_path"]: d["processing_status"] for d in load_inventory_docs(repo)}
-    assert statuses["Week 8/Configuration Audits for Testing Quality.pptx"] == "pending"
-    assert statuses["Week 9/Boundary Value Analysis.docx"] == "pending"
+    assert statuses["Week 10/Legacy Lecture.xls"] == "pending"
+
+    # The supported DOCX/PPTX/XLSX in the same inventory ARE extracted.
+    v2_root = repo / "extracted_v2" / COURSE_ID
+    assert (v2_root / "Week 9" / "Boundary Value Analysis.json").is_file()
+    assert (v2_root / "Week 8" / "Configuration Audits for Testing Quality.json").is_file()
+    assert (v2_root / "Week 3" / "Test Case Example 1.json").is_file()
 
 
 def test_v2_never_touches_v1_output_or_statuses(repo):

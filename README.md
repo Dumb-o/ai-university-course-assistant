@@ -75,9 +75,13 @@ data_extraction/
 ├── extraction_orchestrator.py   # inventory-driven extraction orchestrator v1 (IMPLEMENTED, PDF-first)
 ├── extraction_orchestratorv2.py # semantic extraction orchestrator v2 (IMPLEMENTED, parallel to v1)
 └── extractors/
-    ├── __init__.py              # extension → extractor registry (PDF registered; future formats added here)
+    ├── __init__.py              # extension → extractor registry (v1: PDF; v2: PDF/DOCX/PPTX/XLSX)
+    ├── _v2common.py             # v2 shared helpers (clean-text normalization, semantic paragraph model)
     ├── pdf_extractor.py         # structured PDF extraction via PyMuPDF — v1 (IMPLEMENTED)
-    └── pdf_extractorv2.py       # semantic PDF extraction via PyMuPDF — v2 (IMPLEMENTED)
+    ├── pdf_extractorv2.py       # semantic PDF extraction via PyMuPDF — v2 (IMPLEMENTED)
+    ├── docx_extractorv2.py      # semantic DOCX extraction via python-docx — v2 (IMPLEMENTED)
+    ├── pptx_extractorv2.py      # semantic PPTX extraction via python-pptx — v2 (IMPLEMENTED)
+    └── xlsx_extractorv2.py      # semantic XLSX extraction via openpyxl — v2 (IMPLEMENTED)
 Block_example.html           # saved course-content HTML block used to validate the extractor
 Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1/v2/v3)
 ```
@@ -200,7 +204,7 @@ interface and conventions so the two can be compared on the same course:
 
 ```text
 v1: extraction_orchestrator.py  + extractors/pdf_extractor.py    → extracted/<course_id>/
-v2: extraction_orchestratorv2.py + extractors/pdf_extractorv2.py → extracted_v2/<course_id>/
+v2: extraction_orchestratorv2.py + extractors/*_extractorv2.py   → extracted_v2/<course_id>/
 ```
 
 - **Same contract.** Same CLI (`--course-id`, `--limit`, `--document-id`,
@@ -208,15 +212,19 @@ v2: extraction_orchestratorv2.py + extractors/pdf_extractorv2.py → extracted_v
   `extraction_failed` lifecycle, same atomic inventory writes, same course-id
   validation against `courses.json`, same read-from-raw/write-to-output
   separation, same `--force` rebuild semantics (re-hashes from raw, never
-  reads `extracted/` output). V1 and v2 share the same inventory
+  reads `extracted_v2/` output). V1 and v2 share the same inventory
   (`file_inventory.json`) — both update `processing_status` identically.
-- **Different representation.** v2 builds a **semantic** document model from the
-  same PyMuPDF pass: `structure` (headings/paragraphs/lists/tables with roles
-  and levels), `content` (a linear markdown document with headings, lists,
-  fenced code blocks and ASCII-art tables — no line numbers or bbox noise),
-  `tables` (heading row + body rows, dropped empty/footnote-only tables),
-  and `source` (per-page `items` = cleaned text runs/images with 1-based page
-  numbers and filename, mirroring v1's `pages`). `source_extraction` reports
+- **Multi-format.** v2 registers extractors for **`.pdf` (PyMuPDF)**,
+  **`.docx` (python-docx)**, **`.pptx` (python-pptx)** and **`.xlsx`
+  (openpyxl)**. Everything else stays `pending` and is reported under
+  `Unsupported:` (grouped by extension) instead of being marked failed.
+- **Different representation.** v2 builds a **semantic** document model:
+  `structure` (headings/paragraphs/lists/tables with roles and levels),
+  `content` (a linear markdown document with headings, lists, fenced code
+  blocks and ASCII-art tables — no line numbers or bbox noise), `tables`
+  (heading row + body rows, dropped empty/footnote-only tables), and
+  `source` (the raw extractor payload: PDF per-page items, DOCX paragraphs,
+  PPTX slides/shapes/notes, XLSX sheets/rows). `source_extraction` reports
   the exact provenance of every v2 field. V1 keeps its literal
   per-page-blocks-with-bboxes view; the two are complementary.
 - **Why two.** v1 is the lossless raw view; v2 is the RAG-friendly semantic
@@ -237,23 +245,27 @@ python3 data_extraction/extraction_orchestratorv2.py --course-id mytimes-47164
 
 **IMPLEMENTED NOW:** parallel v2 pipeline, semantic `structure`/`content`/
 `tables`/`source`, `source_extraction` provenance, same lifecycle and safety
-rules, 24 unit/integration tests in `tests/test_extraction_v2.py`.
+rules, DOCX/PPTX/XLSX v2 extractors, per-format output under the same
+mirrored relative path as v1, unsupported-file reporting, 36 unit/integration
+tests in `tests/test_extraction_v2.py` + `tests/test_extraction_v2_formats.py`.
 
-**FUTURE:** DOCX/PPTX/XLSX v2 extractors, `--format` selection (v1|v2|both),
-then the v2 semantic model feeds normalization/classification.
+**FUTURE:** image/OCR extractors, richer table extraction, `--format`
+selection (v1|v2|both), then the v2 semantic model feeds
+normalization/classification.
 
 ## Prerequisites
 
 - Python 3.14+ and a virtual environment
 - Playwright + Chromium (scraper)
-- PyMuPDF (`pymupdf`) for the PDF extractor
+- PyMuPDF (`pymupdf`) for the PDF extractor (v1 + v2)
+- `python-docx`, `python-pptx`, `openpyxl` for the v2 DOCX/PPTX/XLSX extractors
 
 
 ## Running the scraper (v4 — downloads into `course-data/raw/<course_id>/`)
 
 ```bash
 source .venv/bin/activate
-pip install playwright beautifulsoup4 requests fastapi uvicorn pymupdf
+pip install playwright beautifulsoup4 requests fastapi uvicorn pymupdf python-docx python-pptx openpyxl
 playwright install chromium
 python3 scrape_script/mytimes_scraper_v4.py "https://mytimes.taylors.edu.my/course/view.php?id=47164"
 ```
@@ -331,6 +343,8 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Structured data extraction (`data_extraction/`, inventory-driven) | Implemented (PDF-first via PyMuPDF; per-page text/blocks/bboxes/metadata + best-effort tables) |
 | Structured extraction output in `course-data/extracted/<course_id>/` | Implemented (mirrors `raw/` relative structure; statuses updated atomically) |
 | Structured extraction **v2** (semantic model, parallel pipeline) | Implemented (`extraction_orchestratorv2.py` + `pdf_extractorv2.py` → `course-data/extracted_v2/<course_id>/`; structure/content/tables/source + provenance) |
+| v2 **DOCX/PPTX/XLSX** extractors (`python-docx`/`python-pptx`/`openpyxl`) | Implemented + verified end-to-end on both courses (36 + 6 supported docs, 0 failures; unsupported `.doc`/`.ppt`/images stay `pending`) |
+| v2 list detection (real `numPr`/`ilvl` list numbering) | Implemented + verified (Boundary Value Analysis.docx numbered lists → `list: number`, bullets → `bullet`) |
 | Inventory safety: pipelines never write to `generate_inventory.py` inputs | Corrected — v1/v2 both re-hash raw and write only their own output tree (see design doc §12) |
 | Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF) |
 | Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
@@ -338,6 +352,6 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done, PDF-first; v2 semantic pipeline also done, parallel)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done: v1 PDF-first + v2 semantic pipeline with PDF/DOCX/PPTX/XLSX extractors, parallel)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.
