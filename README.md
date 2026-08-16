@@ -10,7 +10,7 @@ The goal of the first working system:
 
 The first version prioritizes **working reliably over sophistication**. Complex autonomous agents, advanced RAG, sophisticated reranking, embedding pipelines, automatic course discovery and search-engine crawling are intentionally **out of scope** for the MVP.
 
-**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
+**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). A **V2 semantic extraction pipeline** (`extraction_orchestratorv2.py` + `pdf_extractorv2.py`) now also runs alongside v1, writing a source-preserving + semantic representation into `course-data/extracted_v2/<course_id>/` for comparison. Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
 
 ## Planned pipeline
 
@@ -30,6 +30,7 @@ File Download
 File Type Detection
     ↓
 Content Extraction (PyMuPDF — IMPLEMENTED, PDF-first)
+                (v1 → `extracted/`, v2 semantic → `extracted_v2/` — IMPLEMENTED, parallel)
     ↓
 Document Classification
     ↓
@@ -63,17 +64,20 @@ course-data/
 ├── inventories/
 │   └── mytimes-47164/
 │       └── file_inventory.json   # course-specific inventory (SHA-256, doc ids, status)
-├── extracted/              # IMPLEMENTED (per-course, structured extraction JSON)
+├── extracted/              # IMPLEMENTED (per-course, structured extraction JSON — v1)
+├── extracted_v2/           # IMPLEMENTED (per-course, semantic extraction JSON — v2, parallel comparison)
 ├── normalized/             # PLANNED (per-course)
 └── chunks/                 # PLANNED (per-course)
 data_ingestion/
 ├── generate_inventory.py   # course-specific inventory generator (IMPLEMENTED, one course per run)
 └── TIKA_ARCHITECTURE_PLAN.md   # Apache Tika integration design (PLAN ONLY — superseded by data_extraction/)
 data_extraction/
-├── extraction_orchestrator.py   # inventory-driven extraction orchestrator (IMPLEMENTED, PDF-first)
+├── extraction_orchestrator.py   # inventory-driven extraction orchestrator v1 (IMPLEMENTED, PDF-first)
+├── extraction_orchestratorv2.py # semantic extraction orchestrator v2 (IMPLEMENTED, parallel to v1)
 └── extractors/
     ├── __init__.py              # extension → extractor registry (PDF registered; future formats added here)
-    └── pdf_extractor.py         # structured PDF extraction via PyMuPDF (IMPLEMENTED)
+    ├── pdf_extractor.py         # structured PDF extraction via PyMuPDF — v1 (IMPLEMENTED)
+    └── pdf_extractorv2.py       # semantic PDF extraction via PyMuPDF — v2 (IMPLEMENTED)
 Block_example.html           # saved course-content HTML block used to validate the extractor
 Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1/v2/v3)
 ```
@@ -189,6 +193,55 @@ updates, idempotent re-runs, single-document test mode.
 then normalization, classification, chunking, embeddings and the knowledge
 base.
 
+## Structured extraction v2 (`data_extraction/` — parallel pipeline)
+
+Alongside v1, a **second, parallel extraction pipeline** runs with the same
+interface and conventions so the two can be compared on the same course:
+
+```text
+v1: extraction_orchestrator.py  + extractors/pdf_extractor.py    → extracted/<course_id>/
+v2: extraction_orchestratorv2.py + extractors/pdf_extractorv2.py → extracted_v2/<course_id>/
+```
+
+- **Same contract.** Same CLI (`--course-id`, `--limit`, `--document-id`,
+  `--force`), same inventory-driven logic, same `pending`/`extracted`/
+  `extraction_failed` lifecycle, same atomic inventory writes, same course-id
+  validation against `courses.json`, same read-from-raw/write-to-output
+  separation, same `--force` rebuild semantics (re-hashes from raw, never
+  reads `extracted/` output). V1 and v2 share the same inventory
+  (`file_inventory.json`) — both update `processing_status` identically.
+- **Different representation.** v2 builds a **semantic** document model from the
+  same PyMuPDF pass: `structure` (headings/paragraphs/lists/tables with roles
+  and levels), `content` (a linear markdown document with headings, lists,
+  fenced code blocks and ASCII-art tables — no line numbers or bbox noise),
+  `tables` (heading row + body rows, dropped empty/footnote-only tables),
+  and `source` (per-page `items` = cleaned text runs/images with 1-based page
+  numbers and filename, mirroring v1's `pages`). `source_extraction` reports
+  the exact provenance of every v2 field. V1 keeps its literal
+  per-page-blocks-with-bboxes view; the two are complementary.
+- **Why two.** v1 is the lossless raw view; v2 is the RAG-friendly semantic
+  view. Running both on the same course lets later stages pick whichever is
+  better and gives an A/B corpus for extraction-quality validation — without
+  touching v1's tested code.
+- **Inventory safety rule (applies to both).** Neither pipeline ever writes to
+  the inventory or to any other pipeline's directory. `--force` re-hashes raw
+  files and re-writes only that pipeline's own output tree; the shared
+  inventory's `processing_status` transitions are the only cross-pipeline
+  effect, and they are applied atomically.
+
+Run it the same way as v1:
+
+```bash
+python3 data_extraction/extraction_orchestratorv2.py --course-id mytimes-47164
+```
+
+**IMPLEMENTED NOW:** parallel v2 pipeline, semantic `structure`/`content`/
+`tables`/`source`, `source_extraction` provenance, same lifecycle and safety
+rules, 24 unit/integration tests in `tests/test_extraction_v2.py`.
+
+**FUTURE:** DOCX/PPTX/XLSX v2 extractors, `--format` selection (v1|v2|both),
+then the v2 semantic model feeds normalization/classification.
+
 ## Prerequisites
 
 - Python 3.14+ and a virtual environment
@@ -277,12 +330,14 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | Legacy global inventory migrated + archived | Implemented (`metadata/archive/file_inventory.global.json`, 31 hashes carried over) |
 | Structured data extraction (`data_extraction/`, inventory-driven) | Implemented (PDF-first via PyMuPDF; per-page text/blocks/bboxes/metadata + best-effort tables) |
 | Structured extraction output in `course-data/extracted/<course_id>/` | Implemented (mirrors `raw/` relative structure; statuses updated atomically) |
+| Structured extraction **v2** (semantic model, parallel pipeline) | Implemented (`extraction_orchestratorv2.py` + `pdf_extractorv2.py` → `course-data/extracted_v2/<course_id>/`; structure/content/tables/source + provenance) |
+| Inventory safety: pipelines never write to `generate_inventory.py` inputs | Corrected — v1/v2 both re-hash raw and write only their own output tree (see design doc §12) |
 | Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF) |
 | Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
 | Embeddings are required | No — future phase |
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done, PDF-first)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done, PDF-first; v2 semantic pipeline also done, parallel)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.
