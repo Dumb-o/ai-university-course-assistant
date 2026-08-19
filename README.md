@@ -10,7 +10,7 @@ The goal of the first working system:
 
 The first version prioritizes **working reliably over sophistication**. Complex autonomous agents, advanced RAG, sophisticated reranking, embedding pipelines, automatic course discovery and search-engine crawling are intentionally **out of scope** for the MVP.
 
-**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). A **V2 semantic extraction pipeline** (`extraction_orchestratorv2.py` + `pdf_extractorv2.py`) now also runs alongside v1, writing a source-preserving + semantic representation into `course-data/extracted_v2/<course_id>/` for comparison. Legacy Microsoft Office files (`.doc`/`.ppt`/`.xls`) are supported via **LibreOffice headless conversion** to their modern equivalents before the existing v2 extractor runs (see "Legacy Microsoft Office Format Handling" below). Apache Tika and everything after extraction are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
+**Status:** Moodle acquisition is completed/prototyped; the architecture is now **course-centric** — each course is identified by its stable Moodle course id (`mytimes-<id>`), downloads land in `course-data/raw/<course_id>/`, a central registry (`course-data/metadata/courses.json`) tracks every course, and each course has its own inventory (`course-data/inventories/<course_id>/file_inventory.json`). A **structured data extraction stage** is now implemented (`data_extraction/`, PDF-first via PyMuPDF): the orchestrator takes only a course id, validates it against the registry, uses the inventory to pick pending documents, and writes per-document extraction JSON into `course-data/extracted/<course_id>/` (mirroring the raw layout). A **V2 semantic extraction pipeline** (`extraction_orchestratorv2.py` + `pdf_extractorv2.py`) now also runs alongside v1, writing a source-preserving + semantic representation into `course-data/extracted_v2/<course_id>/` for comparison. Legacy Microsoft Office files (`.doc`/`.ppt`/`.xls`) are supported via **LibreOffice headless conversion** to their modern equivalents before the existing v2 extractor runs (see "Legacy Microsoft Office Format Handling" below). A **Content Normalization V1** stage (`normalization/normalization_v1.py`) now converts the v2 extraction JSON output into clean Markdown with YAML frontmatter — deterministic transformations only, no LLM. Apache Tika and everything after normalization are **planned** (see `data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); the extraction implementation supersedes the Tika approach with a Python-native extractor.
 
 ## Planned pipeline
 
@@ -36,7 +36,7 @@ Document Classification
     ↓
 Metadata Generation
     ↓
-Content Normalization
+Content Normalization (v2 → Markdown + YAML frontmatter — IMPLEMENTED)
     ↓
 Basic Course Knowledge Base
 ```
@@ -66,7 +66,7 @@ course-data/
 │       └── file_inventory.json   # course-specific inventory (SHA-256, doc ids, status)
 ├── extracted/              # IMPLEMENTED (per-course, structured extraction JSON — v1)
 ├── extracted_v2/           # IMPLEMENTED (per-course, semantic extraction JSON — v2, parallel comparison)
-├── normalized/             # PLANNED (per-course)
+├── normalized/             # IMPLEMENTED (per-course, clean Markdown + YAML frontmatter)
 └── chunks/                 # PLANNED (per-course)
 data_ingestion/
 ├── generate_inventory.py   # course-specific inventory generator (IMPLEMENTED, one course per run)
@@ -83,6 +83,9 @@ data_extraction/
     ├── docx_extractorv2.py      # semantic DOCX extraction via python-docx — v2 (IMPLEMENTED)
     ├── pptx_extractorv2.py      # semantic PPTX extraction via python-pptx — v2 (IMPLEMENTED)
     └── xlsx_extractorv2.py      # semantic XLSX extraction via openpyxl — v2 (IMPLEMENTED)
+normalization/
+├── __init__.py
+└── normalization_v1.py         # content normalization: v2 extraction JSON → Markdown + YAML frontmatter (IMPLEMENTED)
 Block_example.html           # saved course-content HTML block used to validate the extractor
 Links_and_their_meaning.md   # per-link download/skip annotations (the design source for v1/v2/v3)
 ```
@@ -261,6 +264,74 @@ unsupported-file reporting, `--dry-run`, 76 unit/integration tests in
 selection (v1|v2|both), then the v2 semantic model feeds
 normalization/classification.
 
+## Content Normalization V1 (`normalization/`)
+
+The **normalization stage** reads v2 extraction JSON and produces clean,
+consistent Markdown files with YAML frontmatter — the format that feeds the
+knowledge base. No LLM, no summarization, no semantic rewriting: all
+transformations are **deterministic**.
+
+```text
+course-data/extracted_v2/<course_id>/   →   normalization/normalization_v1.py
+                                                ↓
+                                            course-data/normalized/<course_id>/
+```
+
+### Format-specific normalizers
+
+| Format | Source | Output |
+|--------|--------|--------|
+| PDF | `structure.sections[]` → headings, paragraphs, tables | Markdown with `##`/`###` headings; tables as `|`-delimited |
+| DOCX | `content.paragraphs[]` + `content.tables[]` | Markdown with headings (`#`/`##`), bullets (`-`), numbered lists (`1.`), tables |
+| PPTX | `content.slides[]` | Markdown with `## Slide N — Title` boundary headings; bullets, tables, speaker notes |
+| XLSX | `content.sheets[]` | Markdown with `## Sheet: Name` headings and `|`-delimited tables |
+| DOC/PPT/XLS | Legacy (LibreOffice → DOCX/PPTX/XLSX) → same as above | Same as above, with conversion provenance in frontmatter |
+
+### Key behaviors
+
+- **Slide boundaries preserved.** PPTX output uses `## Slide N — Title` headings so slide structure is always visible.
+- **Heading fragment merging.** Consecutive PDF heading fragments at the same level are merged when the combined text is ≤ 80 characters (real split headings); longer headings stay separate (grid layouts).
+- **Tables stay as tables.** XLSX and DOCX tables are rendered as Markdown `|`-delimited tables, not prose.
+- **Legacy provenance preserved.** DOC/PPT/XLS frontmatter includes `conversion_performed`, `conversion_tool`, `conversion_source_format`, `conversion_target_format`, and `conversion_status`.
+- **`source_format` is accurate.** A `.doc` file gets `source_format: "doc"`, not `"docx"`.
+- **Idempotent.** Running without `--force` skips already-normalized files.
+- **Course-centric.** All paths derived from `--course-id`; no path arguments needed.
+- **Images/OCR explicitly out of scope.** Image content is not normalized (noted in frontmatter only).
+
+### Usage
+
+```bash
+python3 normalization/normalization_v1.py --course-id mytimes-47164
+python3 normalization/normalization_v1.py --course-id mytimes-47164 --force  # re-normalize all
+```
+
+### Output format
+
+Each `.md` file begins with YAML frontmatter:
+
+```yaml
+---
+document_id: mytimes-47164-week-3-lecture-3-fundamentals-of-software-testing-pdf
+course_id: mytimes-47164
+filename: "Lecture 3 - Fundamentals of Software Testing.pdf"
+source_path: "Week 3/Lecture 3 - Fundamentals of Software Testing.pdf"
+source_format: "pdf"
+section: "Week 3"
+week: "Week 3"
+mime_type: "application/pdf"
+content_hash: "abc123..."
+hash_algorithm: "sha256"
+extraction_version: "2.0.0"
+---
+```
+
+**IMPLEMENTED NOW:** all format normalizers (PDF/DOCX/PPTX/XLSX/legacy),
+frontmatter generation, `--course-id`/`--force` CLI, idempotent re-runs,
+whitespace normalization, placeholder cleanup, 54 unit/integration tests in
+`tests/test_normalization_v1.py`.
+
+**FUTURE:** document classification, metadata enrichment, chunking.
+
 ## Legacy Microsoft Office Format Handling
 
 `.doc`, `.ppt` and `.xls` are the OLE2 binary container formats of Microsoft
@@ -414,6 +485,7 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 | v2 **DOCX/PPTX/XLSX** extractors (`python-docx`/`python-pptx`/`openpyxl`) | Implemented + verified end-to-end on both courses (36 + 6 supported docs, 0 failures) |
 | v2 legacy **`.doc`/`.ppt`/`.xls`** via LibreOffice headless conversion | Implemented + verified (real `mytimes-47163` run: 23 legacy docs, 0 failures; `.xls` via automated test + temp-course procedure; see "Legacy Microsoft Office Format Handling") |
 | v2 list detection (real `numPr`/`ilvl` list numbering) | Implemented + verified (Boundary Value Analysis.docx numbered lists → `list: number`, bullets → `bullet`) |
+| Content Normalization V1 (`normalization/normalization_v1.py`) | Implemented — v2 extraction JSON → Markdown + YAML frontmatter; all formats (PDF/DOCX/PPTX/XLSX/legacy); deterministic; 54 tests; verified on mytimes-47164 (37 files) + mytimes-47163 (29 files) |
 | Inventory safety: pipelines never write to `generate_inventory.py` inputs | Corrected — v1/v2 both re-hash raw and write only their own output tree (see design doc §12) |
 | Apache Tika extraction | Not used — plan only (`data_ingestion/TIKA_ARCHITECTURE_PLAN.md`); superseded by `data_extraction/` (PyMuPDF + LibreOffice for legacy Office formats) |
 | Complete course ingestion works end-to-end | Download step verified headlessly; live MyTIMES run pending display + credentials; extraction/KB pipeline planned |
@@ -421,6 +493,6 @@ v1 (`mytimes_scraper_v1.py`) is the scrape-only variant; v2 (`mytimes_scraper_v2
 
 ## Roadmap
 
-- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done: v1 PDF-first + v2 semantic pipeline with PDF/DOCX/PPTX/XLSX extractors, parallel, plus legacy `.doc`/`.ppt`/`.xls` via LibreOffice conversion)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
+- **Phase 1 — MVP Ingestion:** authenticated course access → resource discovery → resolution → download → **file inventory (done)** → **structured extraction (done: v1 PDF-first + v2 semantic pipeline with PDF/DOCX/PPTX/XLSX extractors, parallel, plus legacy `.doc`/`.ppt`/`.xls` via LibreOffice conversion)** → **content normalization (done: v2 JSON → Markdown + YAML frontmatter, all formats)** → basic course knowledge base. Tag `v0.1.0` when this works end-to-end.
 - **Phase 2 — Retrieval:** chunking → embeddings → vector database → retrieval.
 - **Phase 3 — Assignment Agent:** builds on retrieval to assist with assignments.
